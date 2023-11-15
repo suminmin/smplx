@@ -1,5 +1,6 @@
 import os.path as osp
 import argparse
+import pickle
 
 import numpy as np
 import torch
@@ -8,7 +9,6 @@ import pyrender
 import trimesh
 
 import smplx
-from smplx.joint_names import Body
 
 from tqdm.auto import tqdm, trange
 
@@ -32,7 +32,18 @@ def main(
     assert output_folder.exists()
 
     # open motion file
-    motion = np.load(motion_file, allow_pickle=True)
+    if ext == "pkl":
+        with open(motion_file, "rb") as f:
+            data = pickle.load(f)
+        motion = {
+            # "poses": data["fullpose"],
+            "poses": data["fullpose"][:, :(21+1)*3],
+            "betas": data["betas"],
+            "gender": np.asarray(gender),
+        }
+    else:
+         motion = np.load(motion_file, allow_pickle=True)
+
     for k, v in motion.items():
         if type(v) is float:
             print(k, v)
@@ -73,12 +84,13 @@ def main(
         poses = torch.tensor(motion["poses"]).float()
     elif "smpl_poses" in motion:
         poses = motion["smpl_poses"]
-        n = poses.shape[0]
         if model_type == "smplh":
+            from smplx.joint_names import Body
             poses = np.stack(
                 [Body.from_smpl(p.reshape(-1, 3)).as_smplh() for p in poses]
             )
         poses = torch.tensor(poses.reshape(n, -1)).float()
+    n = poses.shape[0]
     global_orient = poses[:, :3]
     if model_type == "smplh":
         body_pose = poses[:, 3:66]
@@ -86,8 +98,10 @@ def main(
         right_hand_pose = poses[:, 111:156]
     else:
         body_pose = poses[:, 3:]
-        left_hand_pose = np.zeros((n, 3))
-        right_hand_pose = np.zeros((n, 3))
+        # left_hand_pose = np.zeros((n, 3))
+        # right_hand_pose = np.zeros((n, 3))
+        left_hand_pose = None
+        right_hand_pose = None
     # if sample_expression:
     #     expression = torch.randn(
     #         [1, model.num_expression_coeffs], dtype=torch.float32)
@@ -98,15 +112,34 @@ def main(
         pose_idx = [pose_idx]
         # output = model(betas=betas, # expression=expression,
         #                return_verts=True)
-        output = model(
-            betas=betas,
-            global_orient=global_orient[pose_idx],
-            body_pose=body_pose[pose_idx],
-            left_hand_pose=left_hand_pose[pose_idx],
-            right_hand_pose=right_hand_pose[pose_idx],
-            # expression=expression,
-            return_verts=True,
-        )
+        # output = model(
+        #     betas=betas,
+        #     global_orient=global_orient[pose_idx],
+        #     body_pose=body_pose[pose_idx],
+        #     left_hand_pose=left_hand_pose[pose_idx],
+        #     right_hand_pose=right_hand_pose[pose_idx],
+        #     # expression=expression,
+        #     return_verts=True,
+        # )
+        if left_hand_pose is None or right_hand_pose is None:
+            output = model(
+                betas=betas,
+                global_orient=global_orient[pose_idx],
+                body_pose=body_pose[pose_idx],
+                # expression=expression,
+                return_verts=True,
+            )
+        else:
+            output = model(
+                betas=betas,
+                global_orient=global_orient[pose_idx],
+                body_pose=body_pose[pose_idx],
+                left_hand_pose=left_hand_pose[pose_idx],
+                right_hand_pose=right_hand_pose[pose_idx],
+                # expression=expression,
+                return_verts=True,
+            )
+
         vertices = output.vertices.detach().cpu().numpy().squeeze()
         joints = output.joints.detach().cpu().numpy().squeeze()
 
@@ -182,6 +215,9 @@ if __name__ == "__main__":
         type=lambda arg: arg.lower() in ["true", "1"],
         help="Compute the contour of the face",
     )
+    parser.add_argument(
+        "--gender", type=str, default="neutral", help="Which extension to use for loading"
+    )
 
     args = parser.parse_args()
 
@@ -202,6 +238,7 @@ if __name__ == "__main__":
         output_folder,
         model_type,
         ext=ext,
+        gender=args.gender,
         sample_expression=sample_expression,
         use_face_contour=args.use_face_contour,
     )
